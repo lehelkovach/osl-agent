@@ -1,0 +1,415 @@
+================================================================================
+REPOSITORY ANALYSIS: knowshowgo (deprecated) vs osl-agent-prototype
+================================================================================
+Analysis by: Claude Opus 4 (Anthropic)
+Date: 2026-01-14
+Branch: claude-opus-4
+
+================================================================================
+EXECUTIVE SUMMARY
+================================================================================
+
+This repository (knowshowgo / osl-agent) has been deprecated in favor of 
+github.com/lehelkovach/osl-agent-prototype. After analyzing both codebases,
+I have identified several valuable components from this deprecated project 
+that should be salvaged and merged into the osl-agent-prototype.
+
+The deprecated project represents an earlier, more modular approach to building
+agent memory primitives, while the new prototype is a more complete but also
+more monolithic implementation. The best path forward is to extract the cleanest
+abstractions from this project and integrate them into the new architecture.
+
+================================================================================
+COMPONENTS WORTH SALVAGING (PRIORITY ORDER)
+================================================================================
+
+-----------------------------------------------------------------------------
+1. WORKING MEMORY GRAPH (HIGH PRIORITY)
+   Source: src/knowshowgo/working_memory.py
+-----------------------------------------------------------------------------
+
+WHAT IT IS:
+A NetworkX-based working memory with reinforcement-based edge strengthening.
+Implements a cognitive model where repeatedly accessed associations become
+stronger (up to a max cap), mimicking human short-term memory reinforcement.
+
+KEY FEATURES:
+  - link(source, target, seed_weight): Creates or reinforces edges
+  - access(source, target): Reinforces existing edges on access
+  - get_weight(source, target): Query edge weights without side effects
+  - Configurable reinforce_delta and max_weight caps
+  - Clean, single-responsibility design (44 lines total)
+
+WHY SALVAGE:
+The osl-agent-prototype uses NetworkX for general graph storage 
+(networkx_memory.py) but lacks the reinforcement/reactivation mechanics.
+The cognitive model of "strengthening through use" is valuable for:
+  - Prioritizing frequently-accessed procedures
+  - Implementing decay/forgetting (not yet implemented but noted in roadmap)
+  - Context-aware retrieval based on recency/frequency
+  
+INTEGRATION SUGGESTION:
+Create a WorkingMemoryLayer class in osl-agent-prototype that wraps the
+existing NetworkXMemoryTools and adds reinforcement mechanics. Use it in
+the agent's memory retrieval path to boost frequently-used concepts.
+
+CODE SNIPPET TO SALVAGE:
+```python
+class WorkingMemoryGraph:
+    def __init__(self, reinforce_delta: float = 1.0, max_weight: float = 100.0):
+        self._g = nx.DiGraph()
+        self.reinforce_delta = reinforce_delta
+        self.max_weight = max_weight
+
+    def link(self, source: str, target: str, seed_weight: float = 0.0) -> float:
+        """Create or reinforce an edge; returns updated weight."""
+        # ... reinforcement logic with capping
+        
+    def access(self, source: str, target: str) -> float | None:
+        """Access reinforces the edge if present."""
+        # ... reinforcement on read
+```
+
+-----------------------------------------------------------------------------
+2. ASYNC REPLICATOR PATTERN (HIGH PRIORITY)
+   Source: src/knowshowgo/replication.py
+-----------------------------------------------------------------------------
+
+WHAT IT IS:
+A clean async queue-based pattern for streaming working memory updates to a 
+long-term store (ArangoDB or any GraphClient implementation).
+
+KEY FEATURES:
+  - Pluggable GraphClient protocol with increment_edge_weight interface
+  - Async queue with start/stop lifecycle management
+  - Fire-and-forget enqueueing from hot path
+  - EdgeUpdate dataclass for structured updates
+
+WHY SALVAGE:
+The osl-agent-prototype performs synchronous memory operations which could
+become a bottleneck. This pattern enables:
+  - Decoupled writes (hot path stays fast)
+  - Batching opportunities for database efficiency
+  - Resilience (queue can buffer during DB outages)
+  - Background weight updates without blocking agent loop
+
+INTEGRATION SUGGESTION:
+Add AsyncReplicator to osl-agent-prototype as an optional layer between
+the agent and ArangoMemoryTools/ChromaMemoryTools. Enable with config flag
+for production use.
+
+CODE SNIPPET TO SALVAGE:
+```python
+class GraphClient(Protocol):
+    async def increment_edge_weight(
+        self, source: str, target: str, delta: float, max_weight: float
+    ) -> None: ...
+
+class AsyncReplicator:
+    def __init__(self, client: GraphClient):
+        self.client = client
+        self.queue: asyncio.Queue[EdgeUpdate] = asyncio.Queue()
+        
+    async def start(self) -> None:
+        self._task = asyncio.create_task(self._worker())
+        
+    async def enqueue(self, update: EdgeUpdate) -> None:
+        await self.queue.put(update)
+```
+
+-----------------------------------------------------------------------------
+3. IMMUTABLE PROTOTYPE MODEL (MEDIUM PRIORITY)
+   Source: src/knowshowgo/models.py
+-----------------------------------------------------------------------------
+
+WHAT IT IS:
+Uses frozen=True dataclasses for Prototypes, enforcing true immutability.
+Version chains are tracked via previous_version_id rather than mutating 
+existing objects.
+
+KEY FEATURES:
+  - @dataclass(frozen=True) for Prototype
+  - previous_version_id for version chains
+  - Clear separation between immutable schemas and mutable instances
+  - Core prototype constants (ROOT_PROTOTYPE, OBJECT_PROTOTYPE, etc.)
+  - seed_core_prototypes() for bootstrapping
+
+WHY SALVAGE:
+The osl-agent-prototype uses mutable Node/Edge everywhere. True immutability
+for Prototypes would:
+  - Prevent accidental schema corruption
+  - Enable safe concurrent access
+  - Support audit trails via version chains
+  - Align with the Knowshowgo_SYSTEM_DESIGN_v0.1.md spec
+
+INTEGRATION SUGGESTION:
+Refactor osl-agent-prototype's ksg.py to use frozen dataclasses for
+Prototype definitions. Keep Topics/Concepts mutable but make PropertyDefs
+and Prototypes immutable.
+
+CODE SNIPPET TO SALVAGE:
+```python
+@dataclass(frozen=True)
+class Prototype:
+    """Immutable prototype; edits create a new version via previous_version_id."""
+    id: str
+    name: str
+    schema_meta: Dict[str, Any]
+    tags: List[str] = field(default_factory=list)
+    created_at: datetime = field(default_factory=now_utc)
+    created_by: Optional[str] = None
+    previous_version_id: Optional[str] = None
+```
+
+-----------------------------------------------------------------------------
+4. LIGHTWEIGHT NLP INFERENCE (MEDIUM PRIORITY)
+   Source: src/knowshowgo/inference.py
+-----------------------------------------------------------------------------
+
+WHAT IT IS:
+Simple rule-based classification (task vs event) and time extraction without
+requiring LLM calls. Uses keyword matching and regex patterns.
+
+KEY FEATURES:
+  - infer_concept_kind(instruction): keyword-based task/event classification
+  - extract_event_fields(instruction): regex time extraction (midnight, noon, HH:MM)
+  - process_instruction(): orchestrates classification + instance creation
+
+WHY SALVAGE:
+The osl-agent-prototype relies entirely on LLM for intent classification.
+This lightweight approach could:
+  - Reduce LLM API costs for simple queries
+  - Provide fallback when LLM is unavailable
+  - Speed up hot path for common patterns
+  - Serve as preprocessing before LLM calls
+
+INTEGRATION SUGGESTION:
+Add as a preprocessing layer in agent.py's _classify_intent() method.
+Use lightweight rules first, fall back to LLM for ambiguous cases.
+
+CODE SNIPPET TO SALVAGE:
+```python
+EVENT_KEYWORDS = {"remind", "schedule", "event", "meet", "meeting"}
+
+def infer_concept_kind(instruction: str) -> str:
+    text = instruction.lower()
+    if any(keyword in text for keyword in EVENT_KEYWORDS):
+        return "event"
+    return "task"
+
+def extract_event_fields(instruction: str) -> Dict[str, str]:
+    time_match = re.search(
+        r"\bat\s+(midnight|noon|\d{1,2}(:\d{2})?\s*(am|pm)?)", 
+        instruction, re.IGNORECASE
+    )
+    # ... time normalization logic
+```
+
+-----------------------------------------------------------------------------
+5. FASTAPI MICROSERVICE SCAFFOLD (LOW PRIORITY)
+   Source: packages/knowshowgo-core/src/knowshowgo_core/app.py
+-----------------------------------------------------------------------------
+
+WHAT IT IS:
+A minimal FastAPI service wrapping the knowledge graph and working memory.
+Shows clean request/response patterns for instruction processing.
+
+KEY FEATURES:
+  - Pydantic models for request/response validation
+  - Single /instructions endpoint for processing
+  - Health check endpoint
+  - Async-ready structure
+
+WHY SALVAGE:
+The osl-agent-prototype has a more complex service.py. This simpler pattern
+could be useful for:
+  - Microservice decomposition (split KSG into separate service)
+  - API design reference for new endpoints
+  - Testing scaffolding
+
+INTEGRATION SUGGESTION:
+Use as reference when splitting KSG module into its own package (per 
+osl-agent-prototype roadmap item). The clean separation here is instructive.
+
+-----------------------------------------------------------------------------
+6. HTTP CLIENT WRAPPER (LOW PRIORITY)
+   Source: packages/knowshowgo-orm/src/knowshowgo_orm/client.py
+-----------------------------------------------------------------------------
+
+WHAT IT IS:
+Simple requests-based client for the FastAPI service.
+
+WHY SALVAGE:
+Minimal, but shows the SDK pattern for consuming KSG as a service. Useful
+if/when KSG becomes a separate microservice.
+
+
+================================================================================
+COMPONENTS IN osl-agent-prototype THAT ARE BETTER
+================================================================================
+
+The new prototype has significant advantages over this deprecated codebase:
+
+1. COMPLETE AGENT LOOP
+   - Full intent classification with LLM
+   - Memory retrieval with RAG
+   - Plan generation and execution
+   - Tool orchestration (web, shell, calendar, contacts, messages)
+
+2. RICHER KNOWSHOWGO IMPLEMENTATION
+   - Full v0.1 spec implementation (ksg.py, ksg_orm.py, knowshowgo.py)
+   - PropertyDef seeding with 60+ properties
+   - Prototype inheritance chains
+   - ORM-style object hydration
+   - Fuzzy ontology with weighted associations
+
+3. LEARNING ENGINE
+   - Failure analysis and correction
+   - Transfer learning from similar cases
+   - User feedback integration
+   - Knowledge accumulation
+
+4. PROCEDURE BUILDER
+   - DAG-based procedure storage
+   - Embedding-based procedure recall
+   - Step-by-step execution with DAGExecutor
+
+5. MULTIPLE MEMORY BACKENDS
+   - ArangoDB with full AQL support
+   - ChromaDB for vector search
+   - NetworkX for in-memory testing
+
+6. EXTENSIVE TEST SUITE
+   - 50+ test files
+   - Integration tests with real services
+   - End-to-end learning workflow tests
+
+
+================================================================================
+RECOMMENDED MERGE STRATEGY
+================================================================================
+
+PHASE 1: IMMEDIATE (1-2 days)
+-----------------------------
+1. Port WorkingMemoryGraph to osl-agent-prototype
+   - Create src/personal_assistant/working_memory.py
+   - Integrate with agent's memory retrieval path
+   - Add reinforcement on concept/procedure access
+
+2. Port AsyncReplicator pattern
+   - Add src/personal_assistant/async_replicator.py
+   - Create GraphClient protocol for ArangoMemoryTools
+   - Enable via config flag (ASYNC_REPLICATION=1)
+
+PHASE 2: SHORT-TERM (1 week)
+----------------------------
+3. Add lightweight NLP preprocessing
+   - Add rule-based intent classification before LLM
+   - Use for cost optimization on obvious intents
+   - Add time extraction for event scheduling
+
+4. Refactor to use frozen Prototypes
+   - Make Prototype definitions immutable
+   - Add previous_version_id chains
+   - Update ksg.py seed functions
+
+PHASE 3: MEDIUM-TERM (2-4 weeks)
+--------------------------------
+5. Modularize agent.py
+   - Extract memory operations into dedicated class
+   - Extract tool execution into separate module
+   - Create cleaner single-responsibility components
+
+6. Extract KSG as separate package
+   - Use microservice scaffold as reference
+   - Create knowshowgo-core package
+   - Add SDK client for service consumption
+
+
+================================================================================
+CODE MIGRATION CHECKLIST
+================================================================================
+
+Files to copy/adapt from this repo to osl-agent-prototype:
+
+[ ] src/knowshowgo/working_memory.py -> src/personal_assistant/working_memory.py
+    - Adapt imports
+    - Add integration hooks for agent memory retrieval
+
+[ ] src/knowshowgo/replication.py -> src/personal_assistant/async_replicator.py
+    - Adapt GraphClient protocol for ArangoMemoryTools interface
+    - Add configuration and lifecycle management
+
+[ ] src/knowshowgo/models.py (partial)
+    - Extract frozen Prototype pattern
+    - Merge version chain tracking into existing models.py
+
+[ ] src/knowshowgo/inference.py (partial)
+    - Extract infer_concept_kind() and extract_event_fields()
+    - Add as preprocessing in agent._classify_intent()
+
+[ ] tests/test_working_memory.py -> tests/test_working_memory.py
+    - Adapt for new location
+    
+[ ] tests/test_replication.py -> tests/test_async_replicator.py
+    - Adapt FakeGraphClient for new protocol
+
+
+================================================================================
+ARCHITECTURAL OBSERVATIONS
+================================================================================
+
+STRENGTHS OF DEPRECATED PROJECT:
+- Clean separation of concerns (each file ~50-150 lines)
+- Simple, focused abstractions
+- Cognitive modeling (reinforcement-based memory)
+- Pure Python with minimal dependencies
+- Easy to understand and test
+
+WEAKNESSES OF DEPRECATED PROJECT:
+- Incomplete implementation (no agent loop)
+- No LLM integration
+- Limited prototype seeding
+- No learning/adaptation capabilities
+- Minimal documentation
+
+STRENGTHS OF NEW PROTOTYPE:
+- Complete end-to-end implementation
+- Rich KnowShowGo ontology
+- Learning and adaptation
+- Multiple backend support
+- Extensive test coverage
+
+WEAKNESSES OF NEW PROTOTYPE:
+- Monolithic agent.py (2000+ lines)
+- No working memory / reinforcement model
+- Synchronous memory operations
+- No cost optimization for simple queries
+
+
+================================================================================
+CONCLUSION
+================================================================================
+
+This deprecated project contains several valuable abstractions that would
+enhance the osl-agent-prototype:
+
+1. WorkingMemoryGraph provides cognitive modeling for memory reinforcement
+2. AsyncReplicator enables scalable async memory updates
+3. Immutable Prototype patterns improve schema integrity
+4. Lightweight NLP reduces LLM costs for simple queries
+
+The recommended approach is to incrementally port these components into the
+new prototype while maintaining backward compatibility. The modular design
+of this deprecated project serves as a good reference for eventually
+decomposing the monolithic agent.py in the new prototype.
+
+Priority order for migration:
+1. WorkingMemoryGraph (immediate value, low risk)
+2. AsyncReplicator (scalability, medium complexity)
+3. Lightweight NLP (cost optimization, easy integration)
+4. Immutable Prototypes (architectural improvement, requires refactoring)
+
+================================================================================
+END OF ANALYSIS
+================================================================================
