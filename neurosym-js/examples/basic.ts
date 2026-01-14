@@ -1,22 +1,114 @@
 /**
  * Basic NeuroSym.js Example
  * 
- * Demonstrates causal reasoning with the inference engine.
+ * Demonstrates the main NeuroEngine API for:
+ * - Inference (reasoning)
+ * - Training (learning)
+ * - Export (serialization)
  */
 
-import { NeuroGraph, InferenceEngine, and, or, not, implies } from '../src/index';
+import { NeuroEngine, and, or, not, implies, NeuroJSON } from '../src/index';
 
-// Example 1: Direct logic operations
-console.log('=== Logic Operations ===');
-console.log('and(0.8, 0.9) =', and(0.8, 0.9));        // Lukasiewicz AND
-console.log('or(0.3, 0.4) =', or(0.3, 0.4));          // Lukasiewicz OR
-console.log('not(0.3) =', not(0.3));                   // Negation
-console.log('implies(1.0, 0.5) =', implies(1.0, 0.5)); // Implication
+// ============================================================================
+// Example 1: Direct Logic Operations
+// ============================================================================
 
-// Example 2: Causal reasoning - Weather model
-console.log('\n=== Weather Causal Model ===');
+console.log('=== Lukasiewicz Logic Operations ===\n');
 
-const weatherGraph = new NeuroGraph({
+console.log('and(0.8, 0.9) =', and(0.8, 0.9).toFixed(2));        // Strict AND
+console.log('or(0.3, 0.4) =', or(0.3, 0.4).toFixed(2));          // Permissive OR
+console.log('not(0.3) =', not(0.3).toFixed(2));                   // Negation
+console.log('implies(1.0, 0.5) =', implies(1.0, 0.5).toFixed(2)); // Implication
+
+// ============================================================================
+// Example 2: Bird Classification (from design doc)
+// ============================================================================
+
+console.log('\n=== Bird Classification ===\n');
+
+const birdSchema: NeuroJSON = {
+  version: '1.0',
+  name: 'bird-classifier',
+  variables: {
+    has_wings: { type: 'bool', prior: 0.5 },
+    has_feathers: { type: 'bool', prior: 0.5 },
+    flies: { type: 'bool', prior: 0.5 },
+    is_bird: { type: 'bool', prior: 0.3 }
+  },
+  rules: [
+    {
+      id: 'wings_imply_bird',
+      type: 'IMPLICATION',
+      inputs: ['has_wings'],
+      output: 'is_bird',
+      op: 'IDENTITY',
+      weight: 0.8,
+      learnable: true
+    },
+    {
+      id: 'feathers_imply_bird',
+      type: 'IMPLICATION',
+      inputs: ['has_feathers'],
+      output: 'is_bird',
+      op: 'IDENTITY',
+      weight: 0.9,
+      learnable: true
+    },
+    {
+      id: 'flies_imply_bird',
+      type: 'IMPLICATION',
+      inputs: ['flies'],
+      output: 'is_bird',
+      op: 'IDENTITY',
+      weight: 0.7,
+      learnable: true
+    }
+  ],
+  constraints: []
+};
+
+const birdAI = new NeuroEngine(birdSchema);
+
+// Test case: Penguin (has wings, but doesn't fly)
+console.log('Penguin test (has_wings=1, flies=0):');
+const penguinResult = birdAI.run({ has_wings: 1.0, flies: 0.0 });
+console.log('  is_bird =', penguinResult.is_bird?.toFixed(3));
+
+// Test case: Sparrow (has wings, flies)
+console.log('\nSparrow test (has_wings=1, has_feathers=1, flies=1):');
+const sparrowResult = birdAI.run({ has_wings: 1.0, has_feathers: 1.0, flies: 1.0 });
+console.log('  is_bird =', sparrowResult.is_bird?.toFixed(3));
+
+// ============================================================================
+// Example 3: Training
+// ============================================================================
+
+console.log('\n=== Training Demo ===\n');
+
+console.log('Before training:');
+console.log('  wings_imply_bird weight:', birdAI.getRuleWeight('wings_imply_bird'));
+
+// Train with examples
+birdAI.train([
+  { inputs: { has_wings: 1.0, has_feathers: 1.0 }, targets: { is_bird: 0.95 } },
+  { inputs: { has_wings: 1.0, has_feathers: 0.0, flies: 0.0 }, targets: { is_bird: 0.7 } },
+  { inputs: { has_wings: 0.0, has_feathers: 0.0 }, targets: { is_bird: 0.1 } }
+], 50);
+
+console.log('\nAfter training:');
+console.log('  wings_imply_bird weight:', birdAI.getRuleWeight('wings_imply_bird')?.toFixed(3));
+
+// Test again
+const trainedResult = birdAI.run({ has_wings: 1.0, has_feathers: 1.0 });
+console.log('  is_bird (with feathers+wings):', trainedResult.is_bird?.toFixed(3));
+
+// ============================================================================
+// Example 4: Weather Causal Model
+// ============================================================================
+
+console.log('\n=== Weather Causal Model ===\n');
+
+const weatherSchema: NeuroJSON = {
   version: '1.0',
   name: 'weather-model',
   variables: {
@@ -27,7 +119,6 @@ const weatherGraph = new NeuroGraph({
     slippery: { type: 'bool', prior: 0.05 }
   },
   rules: [
-    // Clouds increase chance of rain
     {
       id: 'clouds_cause_rain',
       type: 'IMPLICATION',
@@ -36,7 +127,6 @@ const weatherGraph = new NeuroGraph({
       op: 'IDENTITY',
       weight: 0.8
     },
-    // Rain wets the ground
     {
       id: 'rain_wets_ground',
       type: 'IMPLICATION',
@@ -45,7 +135,6 @@ const weatherGraph = new NeuroGraph({
       op: 'IDENTITY',
       weight: 0.95
     },
-    // Sprinkler also wets the ground
     {
       id: 'sprinkler_wets_ground',
       type: 'IMPLICATION',
@@ -54,7 +143,6 @@ const weatherGraph = new NeuroGraph({
       op: 'IDENTITY',
       weight: 0.9
     },
-    // Wet ground makes it slippery
     {
       id: 'wet_makes_slippery',
       type: 'IMPLICATION',
@@ -65,79 +153,88 @@ const weatherGraph = new NeuroGraph({
     }
   ],
   constraints: []
-});
+};
 
-const engine = new InferenceEngine({
-  maxIterations: 50,
-  convergenceThreshold: 0.001
-});
+const weatherAI = new NeuroEngine(weatherSchema);
 
-// Query 1: Given it's cloudy, what's the chance of slippery ground?
-console.log('\nScenario: It is cloudy');
-const result1 = engine.inferWithEvidence(weatherGraph, { cloudy: 1.0 });
-console.log('  P(raining) =', result1.states['raining']?.value.toFixed(3));
-console.log('  P(wet_ground) =', result1.states['wet_ground']?.value.toFixed(3));
-console.log('  P(slippery) =', result1.states['slippery']?.value.toFixed(3));
+console.log('Scenario: It is cloudy');
+const cloudyResult = weatherAI.run({ cloudy: 1.0 });
+console.log('  P(raining) =', cloudyResult.raining?.toFixed(3));
+console.log('  P(wet_ground) =', cloudyResult.wet_ground?.toFixed(3));
+console.log('  P(slippery) =', cloudyResult.slippery?.toFixed(3));
 
-// Query 2: Given the ground is wet but it's not raining, is sprinkler on?
-console.log('\nScenario: Wet ground, no rain');
-const result2 = engine.inferWithEvidence(weatherGraph, { 
-  wet_ground: 1.0, 
-  raining: 0.0 
-});
-console.log('  P(sprinkler_on) =', result2.states['sprinkler_on']?.value.toFixed(3));
-console.log('  P(cloudy) =', result2.states['cloudy']?.value.toFixed(3));
+console.log('\nScenario: Ground is wet, not raining');
+const wetNoRainResult = weatherAI.run({ wet_ground: 1.0, raining: 0.0 });
+console.log('  P(cloudy) =', wetNoRainResult.cloudy?.toFixed(3));
+console.log('  P(sprinkler_on) =', wetNoRainResult.sprinkler_on?.toFixed(3));
 
-// Example 3: Argumentation - Debate model
-console.log('\n=== Argumentation Model ===');
+// ============================================================================
+// Example 5: Argumentation (Pro/Con Debate)
+// ============================================================================
 
-const debateGraph = new NeuroGraph({
+console.log('\n=== Argumentation Model ===\n');
+
+const debateSchema: NeuroJSON = {
   version: '1.0',
   name: 'debate-model',
   variables: {
-    claim: { type: 'bool', prior: 0.5 },
-    argument_pro: { type: 'bool', prior: 0.7 },
-    argument_con: { type: 'bool', prior: 0.6 },
-    rebuttal: { type: 'bool', prior: 0.4 }
+    pro_argument: { type: 'bool', prior: 0.7 },
+    con_argument: { type: 'bool', prior: 0.6 },
+    rebuttal: { type: 'bool', prior: 0.4 },
+    conclusion: { type: 'bool', prior: 0.5 }
   },
   rules: [
-    // Pro argument supports the claim
     {
-      id: 'pro_supports_claim',
+      id: 'pro_supports_conclusion',
       type: 'IMPLICATION',
-      inputs: ['argument_pro'],
-      output: 'claim',
+      inputs: ['pro_argument'],
+      output: 'conclusion',
       op: 'IDENTITY',
       weight: 0.85
     }
   ],
   constraints: [
-    // Con argument attacks the claim
     {
-      id: 'con_attacks_claim',
+      id: 'con_attacks_conclusion',
       type: 'ATTACK',
-      source: 'argument_con',
-      target: 'claim',
+      source: 'con_argument',
+      target: 'conclusion',
       weight: 0.7
     },
-    // Rebuttal attacks the con argument
     {
       id: 'rebuttal_attacks_con',
       type: 'ATTACK',
       source: 'rebuttal',
-      target: 'argument_con',
+      target: 'con_argument',
       weight: 0.8
     }
   ]
-});
+};
 
-console.log('\nInitial beliefs (before inference):');
-console.log('  claim =', debateGraph.getValue('claim')?.toFixed(3));
+const debateAI = new NeuroEngine(debateSchema);
 
-const debateResult = engine.infer(debateGraph);
-console.log('\nAfter inference:');
-console.log('  claim =', debateResult.states['claim']?.value.toFixed(3));
-console.log('  argument_con (attacked by rebuttal) =', 
-  debateResult.states['argument_con']?.value.toFixed(3));
+console.log('Debate with pro, con, and rebuttal:');
+const debateResult = debateAI.run();
+console.log('  pro_argument =', debateResult.pro_argument?.toFixed(3));
+console.log('  con_argument (attacked by rebuttal) =', debateResult.con_argument?.toFixed(3));
+console.log('  conclusion =', debateResult.conclusion?.toFixed(3));
 
-console.log('\nDone!');
+console.log('\nStrong rebuttal scenario:');
+const strongRebuttalResult = debateAI.run({ rebuttal: 1.0 });
+console.log('  con_argument =', strongRebuttalResult.con_argument?.toFixed(3));
+console.log('  conclusion =', strongRebuttalResult.conclusion?.toFixed(3));
+
+// ============================================================================
+// Example 6: Export (Serialization)
+// ============================================================================
+
+console.log('\n=== Export Demo ===\n');
+
+const exportedSchema = birdAI.export();
+console.log('Exported schema name:', exportedSchema.name);
+console.log('Number of variables:', Object.keys(exportedSchema.variables).length);
+console.log('Number of rules:', exportedSchema.rules.length);
+console.log('Learned weight for wings_imply_bird:', 
+  exportedSchema.rules.find(r => r.id === 'wings_imply_bird')?.weight.toFixed(3));
+
+console.log('\n✅ Done!');

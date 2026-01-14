@@ -4,14 +4,16 @@ A lightweight, **zero-dependency** JavaScript/TypeScript library for **Neurosymb
 
 NeuroSym.js implements **Logical Neural Networks (LNN)** concepts using a **Parsimonious Data Protocol (NeuroJSON)**. It runs in any JS environment: Node.js, Browser, or Edge Workers.
 
+**Core Philosophy:** "Code as Data" — Logic is defined in serializable JSON, not hardcoded functions.
+
 ## ✨ Features
 
 - **Pure Logic Core**: Lukasiewicz T-Norms for fuzzy/continuous logic (truth values 0.0 to 1.0)
 - **Graph-Based Reasoning**: In-memory graph structure for variables, rules, and constraints
 - **Inference Engine**: Forward chaining, belief propagation, and constraint application
 - **Argumentation Support**: Attack/support relations for defeasible reasoning
-- **Learnable Weights**: Train rule weights from examples via gradient-free optimization
-- **Serializable**: All logic defined in JSON (NeuroJSON protocol), not hardcoded functions
+- **Learnable Weights**: Train rule weights from examples via heuristic gradient descent
+- **Serializable**: All logic defined in JSON (NeuroJSON protocol)
 - **Zero Dependencies**: No external runtime dependencies
 - **TypeScript First**: Full type safety with comprehensive type definitions
 
@@ -23,20 +25,55 @@ npm install neurosym
 
 ## 🚀 Quick Start
 
-### Basic Inference
+### Basic Usage (The Main API)
 
 ```typescript
-import { NeuroGraph, InferenceEngine } from 'neurosym';
+import { NeuroEngine } from 'neurosym';
+import schema from './bird-logic.json';
 
-// Define a simple causal model
-const graph = new NeuroGraph({
+// Initialize
+const ai = new NeuroEngine(schema);
+
+// 1. Inference (Reasoning)
+const result = ai.run({
+  has_wings: 1.0,
+  flies: 0.0  // It's a penguin!
+});
+console.log(result.is_bird); // Should handle the fuzzy conflict
+
+// 2. Training (Learning)
+ai.train([
+  { inputs: { has_wings: 1.0, has_feathers: 1.0 }, targets: { is_bird: 0.95 } },
+  { inputs: { has_wings: 0.0, has_feathers: 0.0 }, targets: { is_bird: 0.1 } }
+]);
+
+// 3. Export (Save learned weights)
+const trainedSchema = ai.export();
+fs.writeFileSync('trained-model.json', JSON.stringify(trainedSchema, null, 2));
+```
+
+### Causal Reasoning Example
+
+```typescript
+import { NeuroEngine } from 'neurosym';
+
+const weatherModel = new NeuroEngine({
   version: '1.0',
   variables: {
-    raining: { type: 'bool', prior: 0.3 },
+    cloudy: { type: 'bool', prior: 0.4 },
+    raining: { type: 'bool', prior: 0.2 },
     wet_ground: { type: 'bool', prior: 0.1 },
     slippery: { type: 'bool', prior: 0.05 }
   },
   rules: [
+    {
+      id: 'clouds_cause_rain',
+      type: 'IMPLICATION',
+      inputs: ['cloudy'],
+      output: 'raining',
+      op: 'IDENTITY',
+      weight: 0.8
+    },
     {
       id: 'rain_wets_ground',
       type: 'IMPLICATION',
@@ -51,61 +88,48 @@ const graph = new NeuroGraph({
       inputs: ['wet_ground'],
       output: 'slippery',
       op: 'IDENTITY',
-      weight: 0.8
+      weight: 0.7
     }
   ],
   constraints: []
 });
 
-// Create inference engine
-const engine = new InferenceEngine();
-
-// Query: What's the probability of slippery ground given it's raining?
-const result = engine.inferWithEvidence(graph, { raining: 1.0 });
-
-console.log('Wet ground:', result.states['wet_ground'].value); // ~0.95
-console.log('Slippery:', result.states['slippery'].value);     // ~0.76
+// Query: Given it's cloudy, what's the chance of slippery ground?
+const result = weatherModel.run({ cloudy: 1.0 });
+console.log('P(slippery | cloudy) =', result.slippery);
 ```
 
 ### Argumentation with Attacks
 
 ```typescript
-import { NeuroGraph, InferenceEngine } from 'neurosym';
+import { NeuroEngine } from 'neurosym';
 
-// Model an argument with pro/con reasoning
-const graph = new NeuroGraph({
+const debate = new NeuroEngine({
   version: '1.0',
   variables: {
-    evidence_for: { type: 'bool', prior: 0.8 },
-    evidence_against: { type: 'bool', prior: 0.6 },
+    pro_argument: { type: 'bool', prior: 0.8 },
+    con_argument: { type: 'bool', prior: 0.6 },
     conclusion: { type: 'bool', prior: 0.5 }
   },
-  rules: [
-    {
-      id: 'support_conclusion',
-      type: 'IMPLICATION',
-      inputs: ['evidence_for'],
-      output: 'conclusion',
-      op: 'IDENTITY',
-      weight: 0.9
-    }
-  ],
-  constraints: [
-    {
-      id: 'attack_conclusion',
-      type: 'ATTACK',
-      source: 'evidence_against',
-      target: 'conclusion',
-      weight: 0.8
-    }
-  ]
+  rules: [{
+    id: 'pro_supports',
+    type: 'IMPLICATION',
+    inputs: ['pro_argument'],
+    output: 'conclusion',
+    op: 'IDENTITY',
+    weight: 0.9
+  }],
+  constraints: [{
+    id: 'con_attacks',
+    type: 'ATTACK',
+    source: 'con_argument',
+    target: 'conclusion',
+    weight: 0.8
+  }]
 });
 
-const engine = new InferenceEngine();
-const result = engine.infer(graph);
-
-// Conclusion is affected by both support and attack
-console.log('Conclusion:', result.states['conclusion'].value);
+const result = debate.run();
+console.log('Conclusion (with conflict):', result.conclusion);
 ```
 
 ### Direct Logic Operations
@@ -122,43 +146,6 @@ console.log(implies(0.8, 0.5));    // 0.7 (min(1, 1 - 0.8 + 0.5))
 // Argumentation operations
 console.log(inhibit(0.8, 1.0, 0.5)); // 0.4 (target reduced by attack)
 console.log(support(0.5, 1.0, 0.5)); // 0.75 (target increased by support)
-```
-
-### Training/Learning Weights
-
-```typescript
-import { NeuroGraph, InferenceEngine, TrainingExample } from 'neurosym';
-
-const graph = new NeuroGraph({
-  version: '1.0',
-  variables: {
-    input: { type: 'bool', prior: 0.5 },
-    output: { type: 'bool', prior: 0.5 }
-  },
-  rules: [{
-    id: 'learnable_rule',
-    type: 'IMPLICATION',
-    inputs: ['input'],
-    output: 'output',
-    op: 'IDENTITY',
-    weight: 0.5,  // Initial weight
-    learnable: true
-  }],
-  constraints: []
-});
-
-const engine = new InferenceEngine({ learningRate: 0.1 });
-
-// Training examples
-const examples: TrainingExample[] = [
-  { inputs: { input: 1.0 }, outputs: { output: 0.9 } },
-  { inputs: { input: 0.0 }, outputs: { output: 0.1 } }
-];
-
-const result = engine.train(graph, examples, 100);
-
-console.log('Final loss:', result.loss);
-console.log('Learned weight:', result.weights['learnable_rule']);
 ```
 
 ## 📐 NeuroJSON Schema
@@ -196,22 +183,21 @@ All logic is defined in a serializable JSON format:
 }
 ```
 
-### Variable Types
-- `bool`: Boolean/propositional variable
-- `continuous`: Continuous-valued variable
+### Supported Operations
+
+| Operation | Formula | Description |
+|-----------|---------|-------------|
+| `AND` | `max(0, sum(inputs) - (n-1))` | Strict requirement of all inputs |
+| `OR` | `min(1, sum(inputs))` | Any input contributes |
+| `NOT` | `1 - input` | Negation |
+| `IDENTITY` | `input` | Direct pass-through |
+| `INHIBIT` | `Target * (1 - Attacker * Weight)` | Attack relation |
 
 ### Rule Types
 - `IMPLICATION`: A → B (if A then B)
 - `CONJUNCTION`: A ∧ B (and)
 - `DISJUNCTION`: A ∨ B (or)
 - `EQUIVALENCE`: A ↔ B (if and only if)
-
-### Operations
-- `IDENTITY`: Pass-through
-- `AND`: Lukasiewicz conjunction
-- `OR`: Lukasiewicz disjunction
-- `NOT`: Negation
-- `WEIGHTED`: Weighted average
 
 ### Constraint Types
 - `ATTACK`: Source defeats/inhibits target
@@ -224,64 +210,80 @@ All logic is defined in a serializable JSON format:
 ┌─────────────────────────────────────────────────────────────────┐
 │                        NeuroSym.js                               │
 ├─────────────────┬──────────────────┬───────────────────────────┤
-│   Logic Core    │   NeuroGraph     │   Inference Engine        │
-│   (Stateless)   │   (State Mgr)    │   (Solver)                │
+│   Logic Core    │   NeuroGraph     │   NeuroEngine             │
+│   (Stateless)   │   (State Mgr)    │   (Main API)              │
 ├─────────────────┼──────────────────┼───────────────────────────┤
-│ • T-Norms       │ • Variables      │ • Forward Chaining        │
-│ • NOT/AND/OR    │ • Rules          │ • Belief Propagation      │
-│ • Implication   │ • Constraints    │ • Constraint Application  │
-│ • Inhibition    │ • State Tracking │ • Training Loop           │
-│ • Support       │ • Evidence Lock  │ • Query/Explain           │
+│ • T-Norms       │ • Variables      │ • run(evidence)           │
+│ • NOT/AND/OR    │ • Rules          │ • train(data)             │
+│ • Implication   │ • Constraints    │ • export()                │
+│ • Inhibition    │ • State Tracking │ • query(variable)         │
+│ • Support       │ • Evidence Lock  │ • getVariables/Rules      │
 └─────────────────┴──────────────────┴───────────────────────────┘
 ```
 
 ## 📚 API Reference
 
-### Classes
+### `NeuroEngine` (Main Class)
 
-#### `NeuroGraph`
-- `constructor(doc?: NeuroJSON)` - Create graph from NeuroJSON
-- `load(doc: NeuroJSON)` - Load NeuroJSON document
-- `export()` - Export to NeuroJSON
-- `getValue(name)` / `setValue(name, value)` - Get/set variable values
-- `lockVariable(name, value)` - Lock variable as evidence
-- `unlockVariable(name)` - Unlock variable
-- `getRule(id)` / `getRules()` - Get rules
-- `getConstraint(id)` / `getConstraints()` - Get constraints
+```typescript
+import { NeuroEngine } from 'neurosym';
 
-#### `InferenceEngine`
-- `constructor(config?: Partial<InferenceConfig>)` - Create engine
-- `infer(graph, recordHistory?)` - Run inference
-- `inferWithEvidence(graph, evidence)` - Run with locked evidence
-- `query(graph, variable, evidence)` - Query single variable
-- `explain(graph, evidence)` - Get MAP explanation
-- `train(graph, examples, epochs)` - Train weights
+const ai = new NeuroEngine(schema, config?);
+```
 
-### Functions
+#### Methods
 
-#### Logic Operations
-- `not(a)` - Negation
-- `and(...values)` - Conjunction
-- `or(...values)` - Disjunction
-- `implies(a, b)` - Implication
-- `equivalent(a, b)` - Equivalence
-- `inhibit(target, attacker, weight)` - Attack relation
-- `support(target, supporter, weight)` - Support relation
+| Method | Description |
+|--------|-------------|
+| `run(evidence?, iterations?)` | Run inference with optional evidence (hard constraints) |
+| `query(variable, evidence?)` | Query a single variable |
+| `train(data, epochs?)` | Train weights from examples |
+| `export()` | Export schema with learned weights |
+| `exportJSON()` | Export as JSON string |
+| `getVariables()` | Get all variable names |
+| `getRules()` | Get all rule IDs |
+| `getRuleWeight(id)` | Get a rule's weight |
+| `setRuleWeight(id, weight)` | Set a rule's weight |
+| `getConfig()` / `setConfig()` | Get/set configuration |
+
+#### Training Formula
+
+Weights are updated using heuristic gradient descent:
+
+```
+Weight_New = Weight_Old + (Error × LearningRate × Input_Strength)
+```
+
+### Logic Functions
+
+```typescript
+import { and, or, not, implies, equivalent, inhibit, support } from 'neurosym';
+```
+
+| Function | Description |
+|----------|-------------|
+| `and(...values)` | Lukasiewicz conjunction |
+| `or(...values)` | Lukasiewicz disjunction |
+| `not(a)` | Negation |
+| `implies(a, b)` | Implication |
+| `equivalent(a, b)` | Equivalence |
+| `inhibit(target, attacker, weight)` | Attack relation |
+| `support(target, supporter, weight)` | Support relation |
 
 ## 🧪 Testing
 
 ```bash
-npm test           # Run tests
-npm run test:coverage  # Run with coverage
+npm test              # Run tests
+npm run test:coverage # Run with coverage
 ```
 
 ## 🔧 Development
 
 ```bash
-npm install        # Install dependencies
-npm run build      # Build distribution
-npm run typecheck  # Type checking
-npm run lint       # Linting
+npm install           # Install dependencies
+npm run build         # Build distribution
+npm run typecheck     # Type checking
+npm run lint          # Linting
 ```
 
 ## 📄 License

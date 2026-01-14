@@ -4,41 +4,55 @@
  * A lightweight, zero-dependency JavaScript library for Neurosymbolic AI.
  * Implements Logical Neural Networks (LNN) with a NeuroJSON protocol.
  * 
+ * Core Philosophy: "Code as Data" - Logic is defined in serializable JSON, not hardcoded functions.
+ * 
  * @example
  * ```typescript
- * import { NeuroGraph, InferenceEngine } from 'neurosym';
+ * import { NeuroEngine } from 'neurosym';
+ * import schema from './bird-logic.json';
  * 
- * const graph = new NeuroGraph({
- *   version: '1.0',
- *   variables: {
- *     raining: { type: 'bool', prior: 0.3 },
- *     wet_ground: { type: 'bool', prior: 0.1 }
- *   },
- *   rules: [{
- *     id: 'rain_causes_wet',
- *     type: 'IMPLICATION',
- *     inputs: ['raining'],
- *     output: 'wet_ground',
- *     op: 'IDENTITY',
- *     weight: 0.95
- *   }],
- *   constraints: []
+ * // Initialize
+ * const ai = new NeuroEngine(schema);
+ * 
+ * // Inference (Reasoning)
+ * const result = ai.run({
+ *   has_wings: 1.0,
+ *   flies: 0.0  // It's a penguin!
  * });
+ * console.log(result.is_bird);
  * 
- * const engine = new InferenceEngine();
- * const result = engine.inferWithEvidence(graph, { raining: 1.0 });
- * console.log(result.states['wet_ground'].value); // ~0.95
+ * // Training (Learning)
+ * ai.train([
+ *   { inputs: { has_wings: 1.0 }, targets: { is_bird: 0.9 } }
+ * ]);
+ * 
+ * // Export (Save learned weights)
+ * const trainedSchema = ai.export();
  * ```
  * 
  * @packageDocumentation
  */
 
 // =============================================================================
-// Core Classes
+// Main Entry Point
+// =============================================================================
+
+export { 
+  NeuroEngine, 
+  createEngine,
+  type Evidence,
+  type InferenceOutput,
+  type TrainingData,
+  type EngineConfig
+} from './engine';
+
+// =============================================================================
+// Lower-level Classes (for advanced use)
 // =============================================================================
 
 export { NeuroGraph, createGraph, parseNeuroJSON } from './neuro-graph';
-export { InferenceEngine, createEngine, infer, query } from './inference';
+export { InferenceEngine, infer, query } from './inference';
+export { createEngine as createInferenceEngine } from './inference';
 
 // =============================================================================
 // Logic Functions
