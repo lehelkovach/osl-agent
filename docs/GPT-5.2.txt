@@ -1,0 +1,215 @@
+OSL Agent (deprecated) → OSL Agent Prototype (main) salvage analysis
+Author: GPT-5.2
+Date: 2026-01-14
+
+Compared:
+- Deprecated repo: `lehelkovach/osl-agent` @ `3c70553087044369b8e84503075cdd6970db95ab`
+- Target repo: `lehelkovach/osl-agent-prototype` (main) @ `6c04bd75e016fa071d1d395f9d5b8d1d0a911156`
+
+Summary (what’s “better here” and worth salvaging)
+==================================================
+The deprecated repo contains a small, clean, test-covered “working-memory reinforcement + replication” core that is largely absent (or only implicitly present) in `osl-agent-prototype`.
+
+`osl-agent-prototype` has a much more complete assistant loop, memory backends (Arango/Chroma/NetworkX), ontology seeding (KSG), UI/service scaffolding, and many tests. It does NOT, however, clearly model “short-term activation / reinforcement” as a first-class, dependency-light component with a clear API and backpressure-safe replication semantics.
+
+The strongest salvage targets are therefore:
+1) the explicit NetworkX “working memory” reinforcement graph (`WorkingMemoryGraph`)
+2) the small async replication worker with queue semantics (`AsyncReplicator`)
+3) the tiny, deterministic instruction heuristic (task vs event + “time” extraction) as an offline fallback / pre-parser
+4) the “core/orm/web” packaging split as a pattern for carving KSG into smaller deployable pieces
+
+
+1) Working-memory reinforcement graph (salvage)
+==============================================
+Deprecated repo has: `src/knowshowgo/working_memory.py`
+- A minimal `WorkingMemoryGraph`:
+  - `link(source, target, seed_weight=0.0) -> weight`
+  - `access(source, target) -> weight|None` (reinforces on read)
+  - `get_weight(source, target) -> weight|None`
+  - reinforcement delta + max cap (`reinforce_delta`, `max_weight`)
+  - dependency: NetworkX only
+  - unit tests: `tests/test_working_memory.py`
+
+Why it’s better / unique vs prototype
+-------------------------------------
+`osl-agent-prototype` has `NetworkXMemoryTools` (`src/personal_assistant/networkx_memory.py`) but that is a *storage backend* abstraction (Node/Edge persistence + embedding-aware search). It does not explicitly implement:
+- a short-term activation/reinforcement layer separate from long-term semantic memory
+- an API for “activation weight updates” that can be emitted/replicated
+- reinforcement-on-access semantics (a classic working-memory / spreading-activation trick)
+
+What to port into `osl-agent-prototype`
+---------------------------------------
+Port the concept (not necessarily the exact file) as a first-class “activation graph”:
+- new module suggestion: `src/personal_assistant/working_memory_graph.py`
+- keep it dependency-light (NetworkX + stdlib), so it can run in all test modes
+- preserve the exact API from deprecated repo (it’s simple and testable)
+
+Where it plugs into prototype
+-----------------------------
+High-value integrations (ordered):
+- Retrieval ranking: when returning memory search results, boost scores by activation weight (recently accessed + reinforced).
+- Tool outcome reinforcement: when a tool succeeds/fails, reinforce or penalize edges between:
+  - user intent ↔ chosen procedure
+  - procedure ↔ steps
+  - task ↔ related concepts
+- UI traceability: expose “why retrieved” as activation weights (debugging is easier).
+
+Important: keep the “activation graph” separate from the semantic store.
+- Semantic store (Arango/Chroma) is your durable, global memory.
+- Activation graph is session-scoped or time-window-scoped (optional persistence later).
+
+
+2) AsyncReplicator queue worker (salvage)
+=========================================
+Deprecated repo has: `src/knowshowgo/replication.py`
+- `AsyncReplicator`:
+  - internal `asyncio.Queue[EdgeUpdate]`
+  - `start()` spawns a worker task
+  - `enqueue(update)` pushes updates
+  - `stop()` cancels worker cleanly
+  - uses `queue.task_done()` + caller can await `queue.join()` for flush semantics
+  - unit tests: `tests/test_replication.py`
+
+Why it’s better / unique vs prototype
+-------------------------------------
+`osl-agent-prototype` uses async-ish patterns (events, scheduler, queue manager), but a small generic replicator with:
+- explicit flush semantics (`queue.join()`)
+- clean lifecycle control (`start()/stop()`)
+- pure “Protocol client” interface
+is a reusable primitive that can simplify several “background write” needs:
+- activation weight updates → Arango edge weights
+- event stream persistence
+- deferred embedding writes / cache updates
+
+What to port into `osl-agent-prototype`
+---------------------------------------
+Port `AsyncReplicator` essentially as-is (rename if needed to avoid conceptual clash with other “replication”):
+- new module suggestion: `src/personal_assistant/async_replicator.py`
+- keep the narrow `Protocol` interface:
+  - `increment_edge_weight(source, target, delta, max_weight)`
+
+Where it plugs into prototype
+-----------------------------
+Best fit: “activation persistence” (optional).
+- When `WorkingMemoryGraph.link/access` increments a weight, emit an `EdgeUpdate`.
+- A replicator worker consumes updates and calls into an Arango-specific implementation to persist `w` deltas.
+
+This keeps the agent loop fast and avoids turning every activation update into a blocking DB call.
+
+
+3) Deterministic “instruction inference” fallback (salvage)
+===========================================================
+Deprecated repo has: `src/knowshowgo/inference.py`
+- deterministic, tiny heuristic:
+  - classify instruction → `event` vs `task`
+  - extract minimal event fields (time + action) via regex
+  - create prototype/instance in a small `KnowledgeGraph`
+  - optionally link to working memory and enqueue replication update
+  - unit tests: `tests/test_inference.py`
+
+Why it’s better / unique vs prototype
+-------------------------------------
+`osl-agent-prototype` relies primarily on LLM planning, which is correct for capability, but the deterministic fallback is valuable for:
+- offline/dev/test modes (no API keys, no LLM)
+- predictable unit tests (no flakiness)
+- fast “bootstrap memory” paths when the LLM is unavailable or should be bypassed
+
+What to port into `osl-agent-prototype`
+---------------------------------------
+Port only the *idea* and minimal utility functions, not the whole `KnowledgeGraph` type:
+- Extract the parts that can act on KSG nodes:
+  - `infer_concept_kind(text)` → returns Task/Event guess
+  - `extract_event_fields(text)` → returns `{"time": ..., "action": ...}`
+- Provide a helper that can create a KSG “Task” or “Event” concept in-memory via existing APIs:
+  - integrate with `KSGORM.create_object(...)` or `KnowShowGoAPI.create_concept(...)`
+
+Net effect: a low-friction “no-LLM quick capture” tool.
+
+
+4) Packaging split: core / orm / web (salvage as a structuring pattern)
+======================================================================
+Deprecated repo has a small monorepo layout:
+- `packages/knowshowgo-core/`: FastAPI service exposing primitives (`app.py`)
+- `packages/knowshowgo-orm/`: thin REST client wrapper (`client.py`)
+- `packages/knowshowgo-web/`: placeholder for a curation UI
+
+Why it’s better / unique vs prototype
+-------------------------------------
+`osl-agent-prototype` already has a service and UI endpoints, but the packaging split is a useful *modularization blueprint*:
+- separate “KSG core service” from “personal assistant agent”
+- enable deploying memory service independently from planning/execution
+- allow other apps to reuse the memory service via a stable API
+
+What to port into `osl-agent-prototype`
+---------------------------------------
+Not literal code, but the factoring plan:
+- carve KSG into a package (or internal module boundary) with a stable API surface
+- optionally expose a “memory service” (FastAPI) that:
+  - seeds ontology
+  - upserts concepts/edges
+  - runs search
+  - (optionally) exposes working-memory activation endpoints
+
+
+What NOT to salvage (or salvage only as ideas)
+==============================================
+- Deprecated repo’s `src/knowshowgo/api.py` + `models.py` represent a different ontology model (immutable `Prototype`, `Node`, `Association`) than the v0.1 “Topic + PropertyDef + fuzzy edges” design in `osl-agent-prototype`.
+  - The *immutability/versioning idea* is good, but the data model conflicts with prototype’s current approach.
+- `packages/knowshowgo-orm` uses `requests` to talk to a tiny service; `osl-agent-prototype` already has richer internal APIs and a FastAPI service. Prefer integrating as internal modules first.
+- The deprecated Arango wrapper (`src/knowshowgo/arangodb_client.py`) is intentionally a no-op if `python-arango` is missing. Prototype depends on `python-arango` already; the exact wrapper is less valuable than the pattern (“optional backend” / “safe import”).
+
+
+Concrete merge/factor plan (actionable)
+=======================================
+If the goal is “extract what’s best here into `osl-agent-prototype` with minimal disruption”, do this:
+
+Step A — Introduce working-memory as a separate layer
+----------------------------------------------------
+- Add `WorkingMemoryGraph` (ported with the same API) under `src/personal_assistant/`.
+- Add unit tests ported from:
+  - `tests/test_working_memory.py`
+- Keep it standalone and dependency-light.
+
+Step B — Add async replication primitive
+----------------------------------------
+- Add `AsyncReplicator` + `EdgeUpdate` under `src/personal_assistant/`.
+- Add unit tests ported from:
+  - `tests/test_replication.py`
+
+Step C — Wire activation into memory retrieval (opt-in)
+-------------------------------------------------------
+- When `KnowShowGoAPI.search_concepts(...)` (or the agent’s memory query path) returns results, optionally apply:
+  - score += f(activation_weight)
+- Reinforce on:
+  - selection (“the agent chose this concept/procedure”)
+  - access (“retrieved and used in a plan”)
+
+Step D — Optional persistence: write activation weights to Arango edges
+----------------------------------------------------------------------
+- Extend `ArangoMemoryTools` to support an “increment edge weight” operation.
+  - In the prototype repo edges already have `props` and often `w`/`strength`.
+  - Implement an AQL update like:
+    - `UPDATE edge WITH { props: MERGE(edge.props, { w: MIN(max, edge.props.w + delta) }) } IN edges`
+  - Use `AsyncReplicator` to batch and avoid blocking the agent loop.
+
+Step E — Add deterministic fallback parser for capture
+------------------------------------------------------
+- Add `infer_concept_kind` + `extract_event_fields` utilities.
+- Expose a “quick capture” tool that:
+  - creates a Task/Event concept without an LLM call
+  - reinforces activation edges between (user input) → (created concept)
+
+
+Key integration cautions
+========================
+- Naming collision: this repo’s `KnowShowGoAPI` (deprecated) is not the same as prototype’s `KnowShowGoAPI` in `src/personal_assistant/knowshowgo.py`.
+  - If porting code, rename modules/classes to avoid confusing future maintainers.
+- Data model mismatch: deprecated repo’s `Prototype/Node/Association` model does not align 1:1 with KSG v0.1 in prototype.
+  - Port the algorithms/behaviors (reinforcement + replication), not the schema.
+
+
+Net recommendation
+==================
+Salvage the “small brain” primitives (working-memory reinforcement + async replication) and integrate them into `osl-agent-prototype` as an explicit activation layer that can optionally persist into Arango edge weights.
+This adds a missing cognitive primitive (short-term activation) without fighting the KSG v0.1 ontology already present in the prototype repo.
+
